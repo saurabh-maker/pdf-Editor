@@ -11,6 +11,11 @@ header{position:sticky;top:env(safe-area-inset-top,0px);z-index:9;background:var
 h1{font-size:16px;margin:0;flex:1 1 auto;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .m{color:var(--mut);font-size:13px}
 .brand{display:flex;flex-direction:column;line-height:1.25}.brand b{font-size:17px}.brand small{color:var(--mut);font-size:12px}
+#tb{flex:1 1 100%;display:none;gap:6px;align-items:center;flex-wrap:wrap;border-top:1px solid var(--bd);padding-top:8px}
+#tb select,#tb input[type=number]{font:inherit;border:1px solid var(--bd);background:var(--panel);color:var(--ink);padding:6px 8px;border-radius:8px}
+#tb input[type=number]{width:70px}#tb input[type=color]{width:38px;height:34px;padding:2px;border:1px solid var(--bd);border-radius:8px;background:var(--panel)}
+#tb button{min-width:36px;padding:6px 10px}#tb button.on{background:var(--acc);border-color:var(--acc);color:#fff}
+#tb :disabled{opacity:.45}
 button{font:inherit;border:1px solid var(--bd);background:var(--panel);color:var(--ink);padding:7px 12px;border-radius:8px;cursor:pointer}
 button.p{background:var(--acc);border-color:var(--acc);color:#fff;font-weight:600}
 button:disabled{opacity:.5;cursor:default}
@@ -33,6 +38,10 @@ button:disabled{opacity:.5;cursor:default}
 <button id="open">Open PDF</button>
 <button id="dl" class="p" disabled>Download edited PDF</button>
 <input type="file" id="file" accept="application/pdf" hidden>
+<div id="tb"><select id="fFont" title="Font"><option value="Helvetica">Sans (Helvetica)</option><option value="Times">Serif (Times)</option><option value="Courier">Mono (Courier)</option></select>
+<input id="fSize" type="number" min="4" max="200" step="0.5" title="Size (pt)">
+<button id="fB" title="Bold (Ctrl+B)"><b>B</b></button><button id="fI" title="Italic (Ctrl+I)"><i>I</i></button><button id="fU" title="Underline (Ctrl+U)"><u>U</u></button>
+<input id="fColor" type="color" title="Text colour"><button id="fReset">Clear format</button><span class="m">Click a line, then format it</span></div>
 </header>
 <div id="drop"><h2>Edit text in any PDF</h2>
 <p class="m">Drop a PDF here or choose one. Click any line of text to change it; layout, spacing and everything else stay exactly where they are. Everything runs in your browser; the file is never uploaded.</p>
@@ -61,7 +70,7 @@ async function load(file){
     const p1=await pdf.getPage(1),v1=p1.getViewport({scale:1});
     S=Math.min(innerWidth-16,1100)/v1.width;
     edits.clear();cnt();if(io)io.disconnect();
-    $('#drop').style.display='none';$('#ttl').textContent=fname;$('#dl').disabled=false;
+    $('#drop').style.display='none';$('#ttl').textContent=fname;$('#dl').disabled=false;$('#tb').style.display='flex';syncTb();
     const box=$('#pages');box.innerHTML='';P=[];
     io=new IntersectionObserver(es=>es.forEach(e=>{const p=P[e.target.dataset.n-1];
       if(e.isIntersecting){render(p);if(e.intersectionRatio>.3)$('#pg').textContent='Page '+p.n+' / '+pdf.numPages}
@@ -130,34 +139,62 @@ function sample(p,s){
     return mk([bg[0],bg[1],bg[2]],fg);
   }catch(e){return def}
 }
+let cur=null;
+const FF={Helvetica:'Roboto,Helvetica,Arial,sans-serif',Times:'"Times New Roman",Times,serif',Courier:'"Courier New",Courier,monospace'};
+const hex=a=>'#'+a.map(v=>Math.round(v*255).toString(16).padStart(2,'0')).join('');
+const defF=s=>({font:'Helvetica',size:+(s.sz/S).toFixed(1),b:!!s.b,i:false,u:false,color:hex(s.col.fgA)});
+const fmt=s=>s.f||(s.f=defF(s));
+const fmtDirty=s=>!!s.f&&JSON.stringify(s.f)!==JSON.stringify(defF(s));
 function mount(p){
   p.lines.forEach((s,i)=>{
     const d=document.createElement('div');d.className='ln';d.contentEditable='true';d.spellcheck=false;d.textContent=s.t;
-    Object.assign(d.style,{left:s.x-2+'px',top:s.y-s.sz*.95+'px',height:s.sz*1.3+'px',minWidth:s.w+4+'px',fontSize:s.sz+'px',lineHeight:s.sz*1.3+'px',fontWeight:s.b?700:400});
-    const key=p.n+':'+i,paint=()=>{d.style.background=s.col.bg;d.style.color=s.col.fg};
+    Object.assign(d.style,{left:s.x-2+'px',top:s.y-s.sz*.95+'px',height:s.sz*1.3+'px',minWidth:s.w+4+'px',lineHeight:s.sz*1.3+'px',fontSize:s.sz+'px',fontWeight:s.b?700:400});
+    const key=p.n+':'+i;
+    const paint=()=>{const f=fmt(s);Object.assign(d.style,{background:s.col.bg,color:f.color,fontFamily:FF[f.font],fontSize:f.size*S+'px',fontWeight:f.b?700:400,fontStyle:f.i?'italic':'normal',textDecoration:f.u?'underline':'none'})};
     const upd=()=>{const t=d.textContent.replace(/\n/g,' ');
-      if(t!==s.t){edits.set(key,{p,s,text:t});d.classList.add('ed')}else{edits.delete(key);d.classList.remove('ed')}cnt()};
-    d.onfocus=()=>{if(!s.col)s.col=sample(p,s);paint()};
+      if(t!==s.t||fmtDirty(s)){edits.set(key,{p,s,text:t});d.classList.add('ed')}else{edits.delete(key);d.classList.remove('ed')}cnt()};
+    d.onfocus=()=>{if(!s.col)s.col=sample(p,s);cur={s,d,upd,paint};paint();syncTb()};
     d.oninput=upd;
     d.onblur=()=>{upd();if(!edits.has(key)){d.style.background=d.style.color=''}};
-    d.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();d.blur()}else if(e.key==='Escape'){d.textContent=s.t;upd();d.blur()}};
+    d.onkeydown=e=>{
+      if(e.key==='Enter'){e.preventDefault();d.blur()}
+      else if(e.key==='Escape'){d.textContent=s.t;s.f=null;paint();upd();d.blur()}
+      else if((e.ctrlKey||e.metaKey)&&'biu'.includes(e.key.toLowerCase())){e.preventDefault();const k=e.key.toLowerCase();setF(k,!fmt(s)[k])}};
     d.onpaste=e=>{e.preventDefault();document.execCommand('insertText',false,e.clipboardData.getData('text').replace(/\s*\n\s*/g,' '))};
     p.ov.append(d);
   });
 }
+const tb={font:$('#fFont'),size:$('#fSize'),b:$('#fB'),i:$('#fI'),u:$('#fU'),color:$('#fColor'),reset:$('#fReset')};
+function syncTb(skipSize){
+  document.querySelectorAll('#tb button,#tb select,#tb input').forEach(e=>e.disabled=!cur);
+  if(!cur)return;const f=fmt(cur.s);
+  tb.font.value=f.font;if(!skipSize)tb.size.value=f.size;tb.color.value=f.color;
+  ['b','i','u'].forEach(k=>tb[k].classList.toggle('on',!!f[k]));
+}
+function setF(k,v,skipSize){if(!cur)return;fmt(cur.s)[k]=v;cur.paint();cur.upd();syncTb(skipSize)}
+tb.font.onchange=()=>setF('font',tb.font.value);
+tb.size.oninput=()=>{const v=parseFloat(tb.size.value);if(v>=4&&v<=200)setF('size',v,true)};
+tb.color.oninput=()=>setF('color',tb.color.value);
+['b','i','u'].forEach(k=>{tb[k].onmousedown=e=>e.preventDefault();tb[k].onclick=()=>cur&&setF(k,!fmt(cur.s)[k])});
+tb.reset.onmousedown=e=>e.preventDefault();
+tb.reset.onclick=()=>{if(cur){cur.s.f=null;cur.paint();cur.upd();syncTb()}};
+syncTb();
 async function exportPdf(){
   const btn=$('#dl');btn.disabled=true;btn.textContent='Building…';
   try{
-    const {PDFDocument,StandardFonts,rgb}=PDFLib,doc=await PDFDocument.load(bytes,{ignoreEncryption:true});
-    const H=await doc.embedFont(StandardFonts.Helvetica),B=await doc.embedFont(StandardFonts.HelveticaBold),pgs=doc.getPages();let shrunk=0,lost=0;
+    const {PDFDocument,StandardFonts:SF,rgb}=PDFLib,doc=await PDFDocument.load(bytes,{ignoreEncryption:true}),pgs=doc.getPages(),cache={};
+    const names={Helvetica:['Helvetica','HelveticaBold','HelveticaOblique','HelveticaBoldOblique'],Times:['TimesRoman','TimesRomanBold','TimesRomanItalic','TimesRomanBoldItalic'],Courier:['Courier','CourierBold','CourierOblique','CourierBoldOblique']};
+    const gf=async f=>{const n=names[f.font][(f.b?1:0)+(f.i?2:0)];return cache[n]||(cache[n]=await doc.embedFont(SF[n]))};
+    let shrunk=0,lost=0;
     for(const e of edits.values()){
-      const {p,s}=e,pg=pgs[p.n-1],f=s.b?B:H,col=s.col||mk([255,255,255],[0,0,0]),sz=s.sz/S,w=s.w/S;
-      let t='';for(const ch of e.text.replace(/[\t\r\n]/g,' ')){try{f.encodeText(ch);t+=ch}catch(x){t+='?';lost++}}
-      let size=sz,tw=t?f.widthOfTextAtSize(t,size):0;const maxW=s.maxW/S;
-      if(tw>maxW){size=Math.max(sz*maxW/tw,sz*.5);tw=f.widthOfTextAtSize(t,size);if(size<sz*.85)shrunk++}
+      const {p,s}=e,pg=pgs[p.n-1],f=fmt(s),ft=await gf(f),col=s.col||mk([255,255,255],[0,0,0]),sz0=s.sz/S,w=s.w/S,fc=f.color.match(/\w\w/g).map(h=>parseInt(h,16)/255);
+      let t='';for(const ch of e.text.replace(/[\t\r\n]/g,' ')){try{ft.encodeText(ch);t+=ch}catch(x){t+='?';lost++}}
+      let size=f.size,tw=t?ft.widthOfTextAtSize(t,size):0;const maxW=Math.max(s.maxW/S,w);
+      if(tw>maxW){size=Math.max(size*maxW/tw,f.size*.5);tw=ft.widthOfTextAtSize(t,size);if(size<f.size*.85)shrunk++}
       const [px,py]=p.vp.convertToPdfPoint(s.x,s.y);
-      pg.drawRectangle({x:px-1.5,y:py-.24*sz,width:Math.max(w,tw)+3,height:1.04*sz,color:rgb(...col.bgA),borderWidth:0});
-      if(t)pg.drawText(t,{x:px,y:py,size,font:f,color:rgb(...col.fgA)});
+      pg.drawRectangle({x:px-1.5,y:py-.24*sz0,width:Math.max(w,tw)+3,height:1.04*sz0,color:rgb(...col.bgA),borderWidth:0});
+      if(t){pg.drawText(t,{x:px,y:py,size,font:ft,color:rgb(...fc)});
+        if(f.u)pg.drawLine({start:{x:px,y:py-size*.12},end:{x:px+tw,y:py-size*.12},thickness:Math.max(.5,size*.06),color:rgb(...fc)})}
     }
     const blob=new Blob([await doc.save()],{type:'application/pdf'}),a=document.createElement('a');
     a.href=URL.createObjectURL(blob);a.download=fname.replace(/\.pdf$/i,'')+'-edited.pdf';document.body.append(a);a.click();a.remove();
