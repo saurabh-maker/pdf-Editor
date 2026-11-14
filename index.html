@@ -36,6 +36,7 @@ button:disabled{opacity:.5;cursor:default}
 <h1 id="ttl"></h1>
 <span class="m" id="pg"></span><span class="m" id="cnt"></span>
 <button id="open">Open PDF</button>
+<button id="dlw" disabled>Download Word (.docx)</button>
 <button id="dl" class="p" disabled>Download edited PDF</button>
 <input type="file" id="file" accept="application/pdf" hidden>
 <div id="tb"><select id="fFont" title="Font"><option value="Helvetica">Sans (Helvetica)</option><option value="Times">Serif (Times)</option><option value="Courier">Mono (Courier)</option></select>
@@ -51,6 +52,7 @@ button:disabled{opacity:.5;cursor:default}
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script>
 pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 const $=s=>document.querySelector(s);let bytes,pdf,fname,S=1,P=[],edits=new Map(),io;
@@ -70,7 +72,7 @@ async function load(file){
     const p1=await pdf.getPage(1),v1=p1.getViewport({scale:1});
     S=Math.min(innerWidth-16,1100)/v1.width;
     edits.clear();cnt();if(io)io.disconnect();
-    $('#drop').style.display='none';$('#ttl').textContent=fname;$('#dl').disabled=false;$('#tb').style.display='flex';syncTb();
+    $('#drop').style.display='none';$('#ttl').textContent=fname;$('#dl').disabled=false;$('#dlw').disabled=false;$('#tb').style.display='flex';syncTb();
     const box=$('#pages');box.innerHTML='';P=[];
     io=new IntersectionObserver(es=>es.forEach(e=>{const p=P[e.target.dataset.n-1];
       if(e.isIntersecting){render(p);if(e.intersectionRatio>.3)$('#pg').textContent='Page '+p.n+' / '+pdf.numPages}
@@ -204,4 +206,57 @@ async function exportPdf(){
   }catch(err){toast('Export failed: '+err.message)}
   btn.disabled=false;btn.textContent='Download edited PDF';
 }
+
+/* ---- Word (.docx) export ---- */
+const FN={Helvetica:'Arial',Times:'Times New Roman',Courier:'Courier New'};
+const esc=t=>t.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g,'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+const sameF=(a,b)=>a.font===b.font&&a.b===b.b&&a.i===b.i&&a.u===b.u&&a.color===b.color&&Math.abs(a.size-b.size)<.6;
+function docxBody(pages,S){
+  const A4=595.3;let body='';
+  pages.forEach((pg,pi)=>{
+    if(!pg.lines.length){body+='<w:p><w:pPr><w:pageBreakBefore/></w:pPr></w:p>';return}
+    const k=A4/(pg.vw/S),L=Math.min(...pg.lines.map(l=>l.x)),R=Math.max(...pg.lines.map(l=>l.x+l.wd)),paras=[];let pv=null;
+    for(const l of pg.lines){
+      const c=Math.abs(l.x+l.wd/2-pg.vw/2)<.03*pg.vw&&l.wd<.8*pg.vw,full=l.x+l.wd>L+.82*(R-L);
+      if(pv&&!pv.c&&pv.full&&sameF(pv.runs[0].f,l.f)&&l.y-pv.lastY>.6*l.sz&&l.y-pv.lastY<1.9*l.sz){pv.runs.push(l);pv.lastY=l.y;pv.full=full}
+      else paras.push(pv={runs:[l],c,full,y0:l.y,lastY:l.y,sz0:l.sz});
+    }
+    const run=(l,sp)=>{const f=l.f,sz=Math.max(2,Math.round(f.size*k*2)),fn=FN[f.font]||'Arial';
+      return `<w:r><w:rPr><w:rFonts w:ascii="${fn}" w:hAnsi="${fn}" w:cs="${fn}"/>${f.b?'<w:b/>':''}${f.i?'<w:i/>':''}<w:color w:val="${f.color.slice(1)}"/><w:sz w:val="${sz}"/><w:szCs w:val="${sz}"/>${f.u?'<w:u w:val="single"/>':''}</w:rPr><w:t xml:space="preserve">${esc(l.t)}${sp?' ':''}</w:t></w:r>`};
+    paras.forEach((p,i)=>{
+      let before=0;if(i>0){const g=p.y0-paras[i-1].lastY-1.25*p.sz0;before=Math.max(0,Math.min(1200,Math.round(g/S*k*20))-100)}
+      body+=`<w:p><w:pPr>${i===0&&pi>0?'<w:pageBreakBefore/>':''}<w:spacing w:before="${before}" w:after="100" w:line="276" w:lineRule="auto"/>${p.c?'<w:jc w:val="center"/>':''}</w:pPr>${p.runs.map((l,j)=>run(l,j<p.runs.length-1)).join('')}</w:p>`;
+    });
+  });
+  return body;
+}
+async function makeDocx(pages,S){
+  const X='<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',z=new JSZip(),R='http://schemas.openxmlformats.org/officeDocument/2006/relationships',W='http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+  z.file('[Content_Types].xml',X+'<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/></Types>');
+  z.file('_rels/.rels',X+`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${R}/officeDocument" Target="word/document.xml"/></Relationships>`);
+  z.file('word/_rels/document.xml.rels',X+`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${R}/styles" Target="styles.xml"/></Relationships>`);
+  z.file('word/styles.xml',X+`<w:styles xmlns:w="${W}"><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:cs="Arial"/><w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr></w:rPrDefault></w:docDefaults></w:styles>`);
+  z.file('word/document.xml',X+`<w:document xmlns:w="${W}"><w:body>${docxBody(pages,S)}<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1134" w:right="1134" w:bottom="1134" w:left="1134" w:header="567" w:footer="567" w:gutter="0"/></w:sectPr></w:body></w:document>`);
+  return z.generateAsync({type:'blob',mimeType:'application/vnd.openxmlformats-officedocument.wordprocessingml.document'});
+}
+
+async function exportDocx(){
+  const btn=$('#dlw');btn.disabled=true;
+  try{
+    const out=[];
+    for(let n=1;n<=pdf.numPages;n++){
+      toast('Converting to Word: page '+n+' / '+pdf.numPages+'…');
+      const p=P[n-1];let lines=p.lines,vw=p.vp&&p.vp.width;
+      if(!lines){const page=await pdf.getPage(n),vp=page.getViewport({scale:S});await page.getOperatorList();lines=await extract(page,vp);vw=vp.width}
+      out.push({vw,lines:lines.map((s,i)=>{const e=edits.get(n+':'+i);
+        return{t:e?e.text:s.t,f:s.f||{font:'Helvetica',size:s.sz/S,b:!!s.b,i:false,u:false,color:'#000000'},x:s.x,y:s.y,sz:s.sz,wd:s.w}}).filter(l=>l.t.trim())});
+    }
+    const blob=await makeDocx(out,S),a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);a.download=fname.replace(/\.pdf$/i,'')+'.docx';document.body.append(a);a.click();a.remove();
+    setTimeout(()=>URL.revokeObjectURL(a.href),4000);
+    toast('Word file downloaded. Text and your edits are included; images and tables are not.');
+  }catch(err){toast('Word export failed: '+err.message)}
+  btn.disabled=false;
+}
+$('#dlw').onclick=exportDocx;
 </script></body></html>
